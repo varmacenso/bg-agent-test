@@ -1,0 +1,5 @@
+{
+  "name": "bg-agent-test",
+  "version": "0.1.0",
+  "scripts": { "test": "node test.js", "start": "node index.js" }
+}
