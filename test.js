@@ -309,6 +309,114 @@ async function run() {
     assert.strictEqual(res.status, 401);
   });
 
+  // --- Refresh token rotation tests (US-004) ---
+  console.log('\nRefresh Token Rotation:');
+
+  // Sign up and login a fresh user for refresh tests
+  await request(server, 'POST', '/api/auth/signup', {
+    email: 'refresh@example.com',
+    password: 'refreshpass123',
+  });
+  const refreshLoginRes = await request(server, 'POST', '/api/auth/login', {
+    email: 'refresh@example.com',
+    password: 'refreshpass123',
+  });
+  const refreshLoginJson = JSON.parse(refreshLoginRes.body);
+
+  await test('POST /api/auth/refresh with valid refreshToken returns 200 and new tokens', async () => {
+    const res = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: refreshLoginJson.refreshToken,
+    });
+    assert.strictEqual(res.status, 200);
+    const json = JSON.parse(res.body);
+    assert.ok(json.accessToken, 'response should have accessToken');
+    assert.ok(json.refreshToken, 'response should have refreshToken');
+    assert.notStrictEqual(json.refreshToken, refreshLoginJson.refreshToken, 'new refresh token should differ');
+  });
+
+  await test('Old refresh token is invalidated after rotation and cannot be reused', async () => {
+    // Login again to get a fresh token pair
+    const loginRes = await request(server, 'POST', '/api/auth/login', {
+      email: 'refresh@example.com',
+      password: 'refreshpass123',
+    });
+    const { refreshToken: original } = JSON.parse(loginRes.body);
+
+    // Rotate once - should succeed
+    const rotateRes = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: original,
+    });
+    assert.strictEqual(rotateRes.status, 200);
+
+    // Try to reuse the original - should fail with 403
+    const reuseRes = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: original,
+    });
+    assert.strictEqual(reuseRes.status, 403);
+    const json = JSON.parse(reuseRes.body);
+    assert.strictEqual(json.error, 'Token reuse detected');
+  });
+
+  await test('Reuse of rotated token invalidates all tokens for that user', async () => {
+    // Login to get fresh tokens
+    const loginRes = await request(server, 'POST', '/api/auth/login', {
+      email: 'refresh@example.com',
+      password: 'refreshpass123',
+    });
+    const { refreshToken: original } = JSON.parse(loginRes.body);
+
+    // Rotate to get a new token
+    const rotateRes = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: original,
+    });
+    const { refreshToken: rotated } = JSON.parse(rotateRes.body);
+
+    // Reuse the original (triggers reuse detection)
+    const reuseRes = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: original,
+    });
+    assert.strictEqual(reuseRes.status, 403);
+
+    // Now the rotated token should also be invalidated
+    const rotatedRes = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: rotated,
+    });
+    assert.strictEqual(rotatedRes.status, 403);
+  });
+
+  await test('POST /api/auth/refresh with expired or invalid token returns 401', async () => {
+    const res = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken: 'invalid.token.here',
+    });
+    assert.strictEqual(res.status, 401);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Invalid refresh token');
+  });
+
+  // --- Logout tests (US-004) ---
+  console.log('\nLogout:');
+
+  await test('POST /api/auth/logout with valid refresh token returns 200', async () => {
+    const loginRes = await request(server, 'POST', '/api/auth/login', {
+      email: 'refresh@example.com',
+      password: 'refreshpass123',
+    });
+    const { refreshToken } = JSON.parse(loginRes.body);
+
+    const res = await request(server, 'POST', '/api/auth/logout', {
+      refreshToken,
+    });
+    assert.strictEqual(res.status, 200);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.message, 'Logged out');
+
+    // The token should no longer work for refresh
+    const refreshRes = await request(server, 'POST', '/api/auth/refresh', {
+      refreshToken,
+    });
+    assert.strictEqual(refreshRes.status, 403);
+  });
+
   // Cleanup
   await new Promise((resolve) => server.close(resolve));
 
