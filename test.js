@@ -1,4 +1,4 @@
-// ABOUTME: Test suite for the auth API - health endpoint, user store, config, and signup.
+// ABOUTME: Test suite for the auth API - health, signup, login, JWT, and protected endpoints.
 // ABOUTME: Uses Node.js built-in assert and http for testing without external test frameworks.
 
 const assert = require('assert');
@@ -19,10 +19,13 @@ async function test(name, fn) {
   }
 }
 
-function request(server, method, path, jsonBody) {
+function request(server, method, path, jsonBody, opts = {}) {
   return new Promise((resolve, reject) => {
     const addr = server.address();
     const headers = {};
+    if (opts.authorization) {
+      headers['Authorization'] = opts.authorization;
+    }
     let payload;
     if (jsonBody !== undefined) {
       payload = JSON.stringify(jsonBody);
@@ -194,6 +197,116 @@ async function run() {
     assert.strictEqual(res.status, 400);
     const json = JSON.parse(res.body);
     assert.strictEqual(json.error, 'Password must be at least 8 characters');
+  });
+
+  // --- Login endpoint tests (US-003) ---
+  console.log('\nLogin Endpoint:');
+  const jwt = require('jsonwebtoken');
+
+  // Sign up a user for login tests
+  await request(server, 'POST', '/api/auth/signup', {
+    email: 'login@example.com',
+    password: 'loginpass123',
+  });
+
+  await test('POST /api/auth/login with valid credentials returns 200 and tokens', async () => {
+    const res = await request(server, 'POST', '/api/auth/login', {
+      email: 'login@example.com',
+      password: 'loginpass123',
+    });
+    assert.strictEqual(res.status, 200);
+    const json = JSON.parse(res.body);
+    assert.ok(json.accessToken, 'response should have accessToken');
+    assert.ok(json.refreshToken, 'response should have refreshToken');
+  });
+
+  await test('Access token is a signed JWT with sub and email, 15m expiry', async () => {
+    const res = await request(server, 'POST', '/api/auth/login', {
+      email: 'login@example.com',
+      password: 'loginpass123',
+    });
+    const json = JSON.parse(res.body);
+    const decoded = jwt.verify(json.accessToken, config.JWT_SECRET);
+    assert.ok(decoded.sub, 'access token should have sub claim');
+    assert.strictEqual(decoded.email, 'login@example.com');
+    // 15m = 900s; check exp - iat is approximately 900
+    const ttl = decoded.exp - decoded.iat;
+    assert.ok(ttl >= 899 && ttl <= 901, `access token TTL should be ~900s, got ${ttl}`);
+  });
+
+  await test('Refresh token is a signed JWT with 7d expiry', async () => {
+    const res = await request(server, 'POST', '/api/auth/login', {
+      email: 'login@example.com',
+      password: 'loginpass123',
+    });
+    const json = JSON.parse(res.body);
+    const decoded = jwt.verify(json.refreshToken, config.JWT_SECRET);
+    assert.ok(decoded.sub, 'refresh token should have sub claim');
+    const ttl = decoded.exp - decoded.iat;
+    const sevenDays = 7 * 24 * 60 * 60;
+    assert.ok(ttl >= sevenDays - 1 && ttl <= sevenDays + 1, `refresh token TTL should be ~${sevenDays}s, got ${ttl}`);
+  });
+
+  await test('Refresh token is stored in the server-side token store', async () => {
+    const { findToken } = require('./src/tokens');
+    const res = await request(server, 'POST', '/api/auth/login', {
+      email: 'login@example.com',
+      password: 'loginpass123',
+    });
+    const json = JSON.parse(res.body);
+    const stored = findToken(json.refreshToken);
+    assert.ok(stored, 'refresh token should be in the token store');
+  });
+
+  await test('POST /api/auth/login with wrong password returns 401', async () => {
+    const res = await request(server, 'POST', '/api/auth/login', {
+      email: 'login@example.com',
+      password: 'wrongpassword',
+    });
+    assert.strictEqual(res.status, 401);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Invalid credentials');
+  });
+
+  await test('POST /api/auth/login with non-existent email returns 401', async () => {
+    const res = await request(server, 'POST', '/api/auth/login', {
+      email: 'nobody@example.com',
+      password: 'password123',
+    });
+    assert.strictEqual(res.status, 401);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Invalid credentials');
+  });
+
+  // --- Protected /me endpoint tests (US-003) ---
+  console.log('\nProtected /me Endpoint:');
+
+  await test('GET /api/auth/me with valid Bearer token returns 200 and {id, email}', async () => {
+    const loginRes = await request(server, 'POST', '/api/auth/login', {
+      email: 'login@example.com',
+      password: 'loginpass123',
+    });
+    const { accessToken } = JSON.parse(loginRes.body);
+    const res = await request(server, 'GET', '/api/auth/me', undefined, {
+      authorization: `Bearer ${accessToken}`,
+    });
+    assert.strictEqual(res.status, 200);
+    const json = JSON.parse(res.body);
+    assert.ok(json.id, 'response should have id');
+    assert.strictEqual(json.email, 'login@example.com');
+    assert.strictEqual(json.password, undefined, 'password must not be in response');
+  });
+
+  await test('GET /api/auth/me without token returns 401', async () => {
+    const res = await request(server, 'GET', '/api/auth/me');
+    assert.strictEqual(res.status, 401);
+  });
+
+  await test('GET /api/auth/me with invalid token returns 401', async () => {
+    const res = await request(server, 'GET', '/api/auth/me', undefined, {
+      authorization: 'Bearer invalid.token.here',
+    });
+    assert.strictEqual(res.status, 401);
   });
 
   // Cleanup
