@@ -1,4 +1,4 @@
-// ABOUTME: Test suite for US-001 - project setup, health endpoint, user store, and config.
+// ABOUTME: Test suite for the auth API - health endpoint, user store, config, and signup.
 // ABOUTME: Uses Node.js built-in assert and http for testing without external test frameworks.
 
 const assert = require('assert');
@@ -19,15 +19,23 @@ async function test(name, fn) {
   }
 }
 
-function request(server, method, path) {
+function request(server, method, path, jsonBody) {
   return new Promise((resolve, reject) => {
     const addr = server.address();
-    const req = http.request({ hostname: '127.0.0.1', port: addr.port, method, path }, (res) => {
+    const headers = {};
+    let payload;
+    if (jsonBody !== undefined) {
+      payload = JSON.stringify(jsonBody);
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(payload);
+    }
+    const req = http.request({ hostname: '127.0.0.1', port: addr.port, method, path, headers }, (res) => {
       let body = '';
       res.on('data', (chunk) => { body += chunk; });
       res.on('end', () => resolve({ status: res.statusCode, body, headers: res.headers }));
     });
     req.on('error', reject);
+    if (payload) req.write(payload);
     req.end();
   });
 }
@@ -122,6 +130,70 @@ async function run() {
 
   await test('express-rate-limit is a dependency', () => {
     assert.ok(pkg.dependencies['express-rate-limit']);
+  });
+
+  // --- Signup endpoint tests (US-002) ---
+  console.log('\nSignup Endpoint:');
+
+  await test('POST /api/auth/signup with valid data returns 201 and {id, email}', async () => {
+    const res = await request(server, 'POST', '/api/auth/signup', {
+      email: 'test@example.com',
+      password: 'password123',
+    });
+    assert.strictEqual(res.status, 201);
+    const json = JSON.parse(res.body);
+    assert.ok(json.id, 'response should have id');
+    assert.strictEqual(json.email, 'test@example.com');
+    assert.strictEqual(json.password, undefined, 'password must not be in response');
+  });
+
+  await test('Signup stores password hashed with bcrypt (cost >= 10)', async () => {
+    const { findUserByEmail } = require('./src/users');
+    const user = findUserByEmail('test@example.com');
+    assert.ok(user, 'user should exist in store');
+    assert.notStrictEqual(user.password, 'password123', 'password must be hashed');
+    // bcrypt hashes start with $2a$ or $2b$ and contain the cost factor
+    assert.ok(/^\$2[ab]\$\d{2}\$/.test(user.password), 'password should be a bcrypt hash');
+    const cost = parseInt(user.password.split('$')[2], 10);
+    assert.ok(cost >= 10, `bcrypt cost should be >= 10, got ${cost}`);
+  });
+
+  await test('POST /api/auth/signup with duplicate email returns 409', async () => {
+    const res = await request(server, 'POST', '/api/auth/signup', {
+      email: 'test@example.com',
+      password: 'anotherpass123',
+    });
+    assert.strictEqual(res.status, 409);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Email already registered');
+  });
+
+  await test('POST /api/auth/signup with missing email returns 400', async () => {
+    const res = await request(server, 'POST', '/api/auth/signup', {
+      password: 'password123',
+    });
+    assert.strictEqual(res.status, 400);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Email and password are required');
+  });
+
+  await test('POST /api/auth/signup with missing password returns 400', async () => {
+    const res = await request(server, 'POST', '/api/auth/signup', {
+      email: 'another@example.com',
+    });
+    assert.strictEqual(res.status, 400);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Email and password are required');
+  });
+
+  await test('POST /api/auth/signup with short password returns 400', async () => {
+    const res = await request(server, 'POST', '/api/auth/signup', {
+      email: 'short@example.com',
+      password: 'short',
+    });
+    assert.strictEqual(res.status, 400);
+    const json = JSON.parse(res.body);
+    assert.strictEqual(json.error, 'Password must be at least 8 characters');
   });
 
   // Cleanup

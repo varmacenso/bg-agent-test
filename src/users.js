@@ -5,14 +5,19 @@ const crypto = require('crypto');
 
 const users = [];
 
-function createUser({ username, password }) {
+function createUser({ email, username, password }) {
   const user = {
     id: crypto.randomUUID(),
-    username,
+    email: email || undefined,
+    username: username || undefined,
     password,
   };
   users.push(user);
   return user;
+}
+
+function findUserByEmail(email) {
+  return users.find((u) => u.email === email);
 }
 
 function findUserByUsername(username) {
@@ -23,4 +28,4 @@ function findUserById(id) {
   return users.find((u) => u.id === id);
 }
 
-module.exports = { createUser, findUserByUsername, findUserById };
+module.exports = { createUser, findUserByEmail, findUserByUsername, findUserById };
