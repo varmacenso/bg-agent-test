@@ -1,5 +1,14 @@
 {
   "name": "bg-agent-test",
   "version": "0.1.0",
-  "scripts": { "test": "node test.js", "start": "node index.js" }
+  "scripts": {
+    "test": "node test.js",
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "express": "^5.2.1",
+    "express-rate-limit": "^8.2.1",
+    "jsonwebtoken": "^9.0.3"
+  }
 }
